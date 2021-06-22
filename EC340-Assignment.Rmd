@@ -1,0 +1,408 @@
+---
+title: "Can Reddit predict markets? To what extent does sentiment data from Reddit predict price movements"
+author: "u1835519"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Import packages
+library(tidyverse)
+library(ggplot2)
+library(tidytext)
+library(text2vec)
+library(lubridate)
+library(progress)
+library(sentimentr)
+library(lexicon)
+library(quanteda)
+library(reticulate)
+library(sjPlot)
+library(zoo)
+library(randomForest)
+library(knitr)
+```
+
+## Introduction
+ The rise in retail investors has led to Reddit being used as an information exchange to discuss stocks and other assets. In this report, we try to ascertain whether overall sentiment from Reddit has the potential to predict its actual performance in the market or if the sentiment can capture some essential information about the movement in stock prices. The report concludes that while the amount of information captured varies from stock to stock, Reddit comments do capture some essential information about the movements of stock prices.
+ 
+## Motivation
+
+The year 2020 saw a massive increase in the total number of retail investors participating in the financial markets. Robinhood (the most prominent retail trading app) reports that it saw the number of new accounts grow by more than 3 million between January to June 2020^1^. The high influx of retail traders exacerbated the volatility introduced by the pandemic and fundamental analysis methods failed to predict the so-called erratic behavior of retail investors. For example, the car rental company, Hertz saw a massive increase in its share price after declaring bankruptcy, due to the buying frenzy from novice investors on Robinhood who saw a recognizable brand for cheap prices.This was followed by the events of January and February 2021, when the retail investors bought vast quantities of stocks with high short interest amongst institutional investors. Moreover, these incidents saw several institutional day traders get in and reap the gains from the price movements caused by retail investors.
+
+However, given that capital markets act as a voting mechanism for the broader economy, volatile markets characterized with unexplainable price movements signal uncertainty that can ripple panic throughout the economy. Therefore, it is important to differentiate between genuine uncertainty caused due to problems in the economy from the the noise generated due to unsubstantiated actions of individuals. Moreover, the ability to understand the behavior of retail investors would help develop the tools to analyze and understand other disorganized markets such as crypto markets. However,  it is difficult and almost impossible to gather financial data from brokers as none of them make their trading data public, Robinhood which used to share data about trades made on its platform stopped this practice in August 2020. 
+
+In light of this, the following report aims to make the case that Reddit serves as an excellent way to pool data about retail investor sentiment. While retail investors use different platforms to trade, all of which might have their own chat rooms, reddit has mutual members across all. Therefore, our intuition is that Reddit and other social media sites serve as a medium that facilitate exchange of information between retail traders, so while the Hertz rally might have originated on one trading platform, it is through Reddit that it is coordinated across all retail investors. Therefore, we aim to look at individual stocks and determine how the effect of Reddit discussions differs for different stocks and to what extent it predicts stock movements. In doing so, the report is restricted to the goal of providing insights into retail investor sentiment that could be incorporated in more sophisticated price prediction for the financial market.
+
+## Methodology
+**Aim:** To show that stock sentiment across Reddit has valuable information worth incorporating into price-prediction models.
+
+**Dataset:** The dataset for data analysis is a large comment dataset from r/wallstreetbets spanning over 7 months from 1^st^ November 2020 to 10^th^ May 2021 (see Appendix), consisting of about 4 million comments. r/wallstreetbets was chose because it is by far the largest community of retail investors on Reddit with more than 10 million members.
+
+**Method:**
+Throughout the report, we first ascertain sentiment for individual stocks and then deploy regression models on the sentiment collected to reveal the predictive power of Reddit sentiment. In doing so, we perform the following steps:
+
+1. **Picking the most popular stocks:** We first sort the comments to find the most mentioned stocks over 6 months (Appendix B) and select two amongst several candidates. These are $TSLA - Tesla Motor Inc. and $CCIV- Churchill Capital Corporation (which is a rumored SPAC to be merged with Lucid motors). Here Tesla represents the category of popular large-cap stocks on Reddit, traded by institutional investors, foreign investors and pension funds. In contrast, CCIV is an SPAC that is rumored to be merged with Lucid. Since it is currently a shelf company, its shares are exclusively traded by a few hedge funds and retail investors on Reddit capitalizing on rumors about a possible merger with Lucid motors. Therefore, CCIV represents the category of stocks which have lower prices and low daily volumes  but are  extremely popular amongst Reddit Investors. The intuition being that Reddit sentiment would better predict movement in such stocks compared to large-cap stocks.
+```{r Clean dataset, include=FALSE, warning=FALSE}
+#loading comment data
+comments <- read.csv("C:/Users/karti/R/wsb/comment_data.csv",
+                         comment.char="#", na.strings= c("[removed]","[deleted]"))
+comments <- as_tibble(comments[, -c(1, 6)])
+# remove all NA columns, convert to a workable format
+comments <- comments %>% 
+  drop_na()
+comments$body <- char_tolower(comments$body, keep_acronyms = TRUE)
+comments$created <- as_date(comments$created)
+comments <- comments %>%
+  rename(Date = created)
+```
+
+2. **Augmenting Sentiment Dictionary:** We run our sentiment analysis using sentimentr, which uses the Jocker Rinker sentiment dictionary, first developed by Matthew Jocker. However, this sentiment dictionary lacks the slang that is unique to r/wallstreetbets. The slang terms on reddit are the most mentioned words and capture a great amount of positive and negative sentiment, therefore, we augment the sentiment dictionary to include the slang words. We weight these slang words to rank them in order of importance in the comments section (wherein the ordinal ranking is calculated using the tf-idf values). Here 0.10 is an arbitrary number separating the words from each other with our main aim being to preserve the ordinal ranking highlighted by our tf-idf analysis. Furthermore, the weight brackets for positive words (1-0.5) and for negative words(-1-0.6) are determined by evaluating the weights for other similar terms which appear in the Jocker Rinker sentiment dictionary such as money, loss, profit etc.)
+
+``` {r wrangling comment data, warning=FALSE}
+# TASKS
+#1 - filtering reddit slang so that it can be detected by dictionary
+#Joining strings that consist of slangs so that htey can be evaluated as one word
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("to the moon", ignore_case = TRUE),
+                                             replacement = "tothemoon")
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("paper hands", ignore_case = TRUE),
+                             replacement = "paperhands")
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("diamond hands",
+                                             ignore_case = TRUE),
+                             replacement = "diamondhands")
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("chicken tendie",
+                                             ignore_case = TRUE),
+                             replacement = "chickentendie")
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("buy high sell low",
+                                             ignore_case = TRUE),
+                             replacement = "buyhighselllow")
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("this is the way",
+                                             ignore_case = TRUE),
+                             replacement = "thisistheway")
+comments$body <- str_replace_all(comments$body[1:4181575],
+                             pattern = fixed("apes together strong",
+                                             ignore_case = TRUE),
+                             replacement = "apestogetherstrong")
+
+#forming a slang dictionary to check the tf-idf matrix for each of the slang terms
+wsb_slang= c("tothemoon","diamondhands", "chickentendies","stonks","guh",
+              "bagholder","paperhands", "buyhighselllow","apestogetherstrong",
+              "thisistheway")
+
+#2 updating jocker rinkers dictionary with wsb_slang to get the new wsb sentiment dict
+##we rank slang terms in order of ranking separated by an arbitrary factor of 0.10, to compensate for difference in importance of terms. the positive terms still contribute positively and negative ones negatively
+wsb_key <- update_key(hash_sentiment_jockers_rinker,
+                      x = data.frame(x=c("tothemoon","diamondhands",
+                                         "chickentendies","stonks",
+                                         "guh","bagholder","paperhands",
+                                         "buyhighselllow","apestogetherstrong",
+                                         "thisistheway"), y=c(0.8,0.9,0.6,
+                                                              1.0,-1,-0.8,
+                                                              -0.9,-0.7,0.5,
+                                                              0.7)))
+```
+3. **Modelling Sentiment on Financial data:** We analyze the power of the average sentiment score to predict percentage change in stock price of both Tesla and Churchill in two ways, as a multivariate OLS regression and the as a random Forest. We use the percentage change to measure against other variables such as the closing price because closing price is not stationary and therefore, would violate the assumptions under OLS. Furthermore, we regress the percentage change in stock price on the 1^st^ lag of sentiment as well as the first lag of the log of number of comments on each day. Here, we use first lags not to demonstrate an Engel-Granger process of Autoregressive distributed lags but because most activity on r/wallstreetbets occurs after market close until 1:00 - 2:00 a.m. of the next day, therefore, a large part of the sentiment for the next day is captured on Reddit during the late hours of the previous day.
+``` {r tesla sentiment analysis, warning=FALSE}
+#TESLA
+#Filter comments about that mention tesla and add the number of comments for
+# each date
+tesla_comments <- comments %>%
+  filter(str_detect(body, "TSLA|tesla|tsla|Tesla|TESLA"))
+tesla_comments <- tesla_comments %>%
+  add_count(Date)
+
+#Run sentiment analysis on all Tesla comments using sentiment R, to give us an average sentiment score
+tesla_sent<- with(
+  tesla_comments,
+  sentiment_by(get_sentences(body), list(Date)))
+tesla_sent$Date <- as_date(tesla_sent$Date)
+tesla_sent <- tesla_sent %>%
+  left_join(distinct(tesla_comments, Date, .keep_all = T)[, c("Date", "n")],
+            by = "Date") %>%
+  mutate(logof_n = log(n))
+```
+```{r load financial data, include=FALSE}
+# Load and clean Tesla financial data 
+tesla_stock<- read_csv("TSLA.csv")
+```
+```{r clean tesla}
+#and clean Tesla and adjust na values.
+#Genereating dependent variable which is stationary.
+tesla_stock<- tesla_stock %>%
+  mutate(percent_change = ((Close - Open)/Open))
+tesla_stock<- tesla_stock %>%
+  full_join(tesla_sent, by = "Date")%>%
+  arrange(Date)
+tesla_stock<- tesla_stock[-c(1,129:135,173:176),]
+tesla_stock$Close<- na.locf(tesla_stock$Close)
+tesla_stock$Low<- na.locf(tesla_stock$Close)
+tesla_stock$High<- na.locf(tesla_stock$Close)
+tesla_stock$ave_sentiment<- na.approx(tesla_stock$ave_sentiment, rule = 2)
+tesla_stock$percent_change<- na.approx(tesla_stock$percent_change, rule = 2)
+tesla_stock$logof_n<- na.approx(tesla_stock$logof_n, rule = 2)
+tesla_stock$lag1 <- c(NA, tesla_stock$ave_sentiment[seq_along(tesla_stock$ave_sentiment) -1])
+tesla_stock$lag2 <- c(NA, NA, tesla_stock$ave_sentiment[seq_along(tesla_stock$ave_sentiment) -c(1,2)])
+tesla_stock$lag_Comment <- c(NA, tesla_stock$logof_n[seq_along(tesla_stock$ave_sentiment) -1])
+
+```
+```{r, Lucid sentiment analysis, warning=FALSE}
+#CCIV
+#Filtering comments about that mention tesla and add the number of comments for
+# each date
+cciv_comments <- comments %>%
+  filter(str_detect(body, "cciv|CCIV|Lucid|LUCID")) %>%
+  add_count(Date)
+## Analysing the sentiment of tesla comments using the wsb_key, the augmented
+# dictionary made above
+cciv_sent<- with(
+  cciv_comments,
+  sentiment_by(get_sentences(body), list(Date), polarity_dt = wsb_key))
+cciv_sent$Date <- as_date(cciv_sent$Date)
+cciv_sent <- cciv_sent %>%
+  left_join(distinct(cciv_comments, Date, .keep_all = T)[, c("Date", "n")],
+            by = "Date") %>%
+  mutate(logof_n = log(n))
+```
+```{r load lucid, include=FALSE}
+#import financial data
+cciv_stock<- read_csv("CCIV.csv")
+```
+```{r clean lucid, warning=FALSE}
+#clean Licid financial data and adjust na values.
+cciv_stock<- cciv_stock %>%
+  mutate(percent_change = ((Close - Open)/Open))
+cciv_stock<- cciv_stock %>%
+  full_join(cciv_sent, by = "Date")%>%
+  arrange(Date)
+cciv_stock<- cciv_stock[-c(1:49,100:106,138),]
+cciv_stock$Close<- na.locf(cciv_stock$Close)
+cciv_stock$Low<- na.locf(cciv_stock$Close)
+cciv_stock$High<- na.locf(cciv_stock$Close)
+cciv_stock$ave_sentiment<- na.approx(cciv_stock$ave_sentiment, rule = 2)
+cciv_stock$percent_change<- na.approx(cciv_stock$percent_change, rule = 2)
+cciv_stock$logof_n<- na.approx(cciv_stock$logof_n, rule = 2)
+cciv_stock$lag1 <- c(NA, cciv_stock$ave_sentiment[seq_along(cciv_stock$ave_sentiment) -1])
+cciv_stock$lag2 <- c(NA, NA, cciv_stock$ave_sentiment[seq_along(cciv_stock$ave_sentiment) -c(1,2)])
+cciv_stock$lag_Comment <- c(NA, cciv_stock$logof_n[seq_along(cciv_stock$ave_sentiment) -1])
+
+```
+## Results
+
+The results for Tesla reveal that our model isn't good at predicting the percentage change in the price for tesla stock, which in line with our intuition about the model performing poorly when it comes to large cap stocks. However, the R^2 value of -0.006 shows that the sentiment does not capture much information about the movement in stock price. Furthermore, the Random Forest performs worse with a RMSE that is higher than that of OLS.
+
+```{r tesla ardl and random forest, echo=FALSE, warning=FALSE, echo=TRUE, fig.align='center'}
+#break into test and training set
+tesla_train<- tesla_stock[c(1:127), ]
+tesla_test<- tesla_stock[-c(1:127), ]
+
+#linear regression
+tesla_model<- lm(percent_change~lag1+lag_Comment+lag1*lag_Comment, data = tesla_train)
+tesla_pred<- predict(tesla_model, newdata = tesla_test)
+tesla_pred<- cbind(tesla_test, tesla_pred)
+tab_model(tesla_model)
+
+#random forest
+rf <- randomForest(percent_change~ave_sentiment+logof_n+lag2+lag_Comment+lag_Comment*lag1, data = tesla_train[-c(1:2),])
+tesla_rf <- predict(rf, newdata = tesla_test)
+tesla_pred <- cbind(tesla_pred, tesla_rf)
+
+#root mean squared error for random forest and model
+rmse1<- sqrt(mean((tesla_pred$percent_change - tesla_pred$tesla_rf)^2))
+rmse2<- sqrt(mean((tesla_pred$percent_change - tesla_pred$tesla_pred)^2))
+tesla_rmse<- data.frame(model=c("OLS", "Random Forest"), RMSE=c(rmse2, rmse1))
+kable(tesla_rmse, "simple")
+
+```
+
+The results for Lucid, however, show that the sentiment does capture some amount of price movement in stock prices. Given that these our volatile stocks and the noisy nature of daily financial data, our model gets an R^2 of 0.3, with all coefficients except the number of comments, being significant at 10% significance level.
+
+```{r, Lucid ARDL and random forest, warning=FALSE, echo= TRUE, fig.align='center'}
+
+
+cciv_train<- cciv_stock[c(1:50), ]
+cciv_test<- cciv_stock[-c(1:50), ]
+
+#linear regression
+cciv_model<- lm(percent_change~lag1+lag_Comment+lag_Comment*lag1, data = cciv_train)
+cciv_pred <- predict(cciv_model, newdata = cciv_test)
+cciv_pred <- cbind(cciv_test, cciv_pred)
+tab_model(cciv_model)
+```
+
+The Random Forest performs much better in this case beating the OLS with a much lower RMSE.
+
+```{r random forest, echo= TRUE}
+#random forest
+rf1 <- randomForest(percent_change~ave_sentiment+lag1+lag2+logof_n+lag_Comment+lag_Comment*lag1, data = cciv_train[-c(1:2),])
+cciv_rf<- predict(rf1, newdata = cciv_test)
+cciv_pred<- cbind(cciv_pred, cciv_rf)
+
+rmse3<- sqrt(mean((cciv_pred$percent_change - cciv_pred$cciv_rf)^2))
+rmse4<- sqrt(mean((cciv_pred$percent_change - cciv_pred$cciv_pred)^2))
+cciv_rmse<- data.frame(model=c("OLS", "Random Forest"), RMSE=c(rmse4, rmse3))
+kable(cciv_rmse, "simple")
+```
+
+The plot below shows that both models capture the percentage change in stock price to some extent, however, the predicted values from OLS exaggerate the sentiment beyond what is reflected in the stock price movement. This can possibly be explained from the fact that not all people on r/wallstreetbets are necessarily active investors, or among those who are quite a few of them would comment on the stock even though it is not in their portfolio. Furthermore, that are some instances where the models get the predictions completely wrong. This can also be explained from the fact that the stock price movements is also dependent on other developments outside of Reddit, such as macro effects on stocks as well as the decisions taken by institutional investors trading the stock. However, broadly both models do capture some extent of price movement in the sentiment data.
+```{r plot cciv, echo=FALSE, fig.align='center'}
+#plot
+ggplot(cciv_pred, (aes(Date, percent_change))) +
+  geom_point()+
+  geom_line(aes(y = percent_change, colour = "Test values"))+
+  geom_line(aes(y = cciv_pred, colour = "Predicted Values"))+
+  geom_line(aes(y=cciv_rf, colour= "Random Forest Prediction"))+
+  ggtitle("CCIV", subtitle = "Closing price regressed on Average sentiment, 1st Lag of sentiment and natural log of total comments per day ")
+
+
+```
+
+## Conclusion
+Therefore, given our results we conclude that Reddit comments do capture some useful information about the movement of stock prices, furthermore, since these predictions are based on comments collected before the market opens on a particular day, they also provide an arbitrage opportunity. However,these models need to resolve the associated caveats of our current models by including cross-variable linkages as well as other macro variables affecting stock prices. Nonetheless, given the increasing role of retail investors in the market, the sentiment data is bound to remain a crucial aspect to predict stock price movement as shown by our results. 
+
+
+## References
+1. How Robinhood and Covid introduced millions to the stock market (Oct, 2020) <https://www.cnbc.com/2020/10/07/how-robinhood-and-covid-introduced-millions-to-the-stock-market.html>
+
+2. Can we actually predict market change by analyzing Reddit’s /r/wallstreetbets? Zain Khan, August 2020. <https://medium.com/the-innovation/can-we-actually-predict-market-change-by-analyzing-reddits-r-wallstreetbets-9d7716516c8e>
+
+3. Sentimentr by Tyler Rinker <https://github.com/trinker/sentimentr>
+
+## Appendix
+
+### Appendix A - the most important slang terms in comments
+
+```{r most important slang terms by tf-idf, echo=FALSE}
+#tokenise comments into words
+tokenise_comments <- comments %>%
+  unnest_tokens(words, body)
+
+issue_words <- tokenise_comments %>% 
+  filter(words %in% wsb_slang) %>%
+  group_by(Date, words) %>%
+  tally() %>% 
+  arrange(desc(n))
+#sort words by tf-idf and list first 20
+issue_words <- issue_words %>% 
+  bind_tf_idf(words, Date, n) %>%
+  filter(n>100) %>%
+  arrange(desc(tf_idf), .by_group = TRUE)
+knitr::kable(issue_words[1:20, ])
+```
+
+### Appendix B - Finding the most mentioned stock in Reddit Comments
+```{r most popular stock, eval=FALSE}
+ #Preprocessing ticker data
+ticker_data <- read.csv("C:/Users/karti/R/wsb/data/tickers.csv",
+                        comment.char = "#")
+tickers_only <- as_tibble(ticker_data[,c(3,7)])
+# look for most mentioned stocks on reddit using stock tickers
+tickers_only <- tickers_only %>%
+  rowwise() %>%
+  mutate(counter = sum(grepl(symbol, comments$body)))
+```
+### Appendic C - Sentiment Analysis using sentimentr
+The sentiment analysis is done using the sentiment package by Tyler Rinker. Sentimentr analyses sentiment by using a bag of words approach, wherein each sentence in a comment is broken into its individual constituent words and its associated sentiment is analysed. Furthermore, sentiment picks up polarized cluster of 7 words, 4 words preceding the actual words and two words succeeding it, Sentimentr then applies valence shifters on the polarized clusters to cancel out double negations such as “not bad” as well as to consider the effect of negators such as “not”, “nothing” etc. Then each polarised cluster is weighted based on the polarity dictionary, which by default is the sentiment dictionary built by Matthew Jockers. More details about the sentimenr package can be found here: <https://github.com/trinker/sentimentr>
+
+### Appendix D - Data Collection
+The data was scraped from Reddit, Yahoo Finace and Finhub using their respective API's using Python. All the datasets used in the above script can be found here: <https://drive.google.com/drive/folders/14buTvdrJ4UhU3OnqIC4q6bJu5a-qv3oa?usp=sharing>
+Alternatively, the data can be scraped of the web using the following script.
+```{python, eval = FALSE}
+import pandas as pd
+from pandas_datareader import data as pdr
+import requests
+import yfinance as yf
+yf.pdr_override()
+import datetime as dt
+from datetime import datetime
+import requests
+from psaw import PushshiftAPI
+
+#Scraping Reddit Dataxz
+# split lists into two halves of approx equal length
+def list_splitter(list1):
+    middle_index = len(list1)//2  # rounds down so first half is larger in size
+    list2 = list1[:middle_index]
+    list3 = list1[middle_index:]
+    return list2, list3
+
+
+# get all comments for a post using comment ids
+def comment_scraper(id_list):  # each list should contain the comment ids
+    list1 = id_list  # list o
+    try:  # try to see if the whole url isn't too long and executes
+        comment_string = ",".join(list1)
+        url = 'https://api.pushshift.io/reddit/comment/search?ids='+comment_string
+        comment_data = requests.get(url)
+        comment_data_f = comment_data.json()
+        df = pd.DataFrame(comment_data_f['data'])
+    except:  # otherwise split the id_list and execute the function recursively
+        x, y = list_splitter(id_list)
+        x_comment = comment_scraper(x)
+        y_comment = comment_scraper(y)
+        df = pd.concat([x_comment, y_comment], axis=0)
+    return df
+
+
+def main():
+    # Download all post ids and titles within a given time period using Pushsh
+    # API
+    api = PushshiftAPI()
+    start_epoch = int(dt.datetime(2020, 11, 1).timestamp())
+    end_epoch = int(dt.datetime(2020, 12, 31).timestamp())
+    submission_data = api.search_submissions(after=start_epoch,
+                                             before=end_epoch,
+                                             subreddit='wallstreetbets',
+                                             q='Daily Discussion',
+                                             filter=['id',
+                                                     'title',
+                                                     'score',
+                                                     'author',
+                                                     'url'])
+    df = pd.DataFrame(submission_data)
+    df.to_csv('submissions2.csv')
+
+    # retrieve comment ids for all posts
+    for i in df['id']:
+        if i == "":
+            pass
+        else:
+            url = 'https://api.pushshift.io/reddit/submission/comment_ids/'+str(i)
+            comments = requests.get(url)
+            commentid = pd.DataFrame.from_dict(comments.json())
+            comment_list = []
+            for m in commentid['data']:
+                comment_list.append(m)
+            com_data = comment_scraper(comment_list)
+            com_data.to_csv('comments'+str(i)+'.csv')
+    print("complete")
+
+
+if __name__ == '__main__':
+    main()
+
+
+# Retrieving stock tickers
+r = requests.get(
+    'https://finnhub.io/api/v1/stock/symbol?exchange=US&token=c2a28h2ad3ie1fm4nurg')
+df = pd.DataFrame(r.json())
+df.to_csv('tickers.csv')
+
+
+#Retrieving Financial Data
+df = pdr.get_data_yahoo("TSLA", start="2020-11-01", end="2021-05-10")
+df2 = pdr.get_data_yahoo("GME", start="2020-11-01", end="2021-05-10")
+df3 = pdr.get_data_yahoo("SNDL", start="2020-11-01", end="2021-05-10")
+df.to_csv("TSLA.csv")
+df2.to_csv("GME.csv")
+df3.to_csv("SNDL.csv")
+
+df4 = pdr.get_data_yahoo("CCIV", start="2020-11-01", end="2021-05-10")
+df4.to_csv("CCIV.csv")
+
+
